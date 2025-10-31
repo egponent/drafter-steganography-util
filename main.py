@@ -4,7 +4,7 @@ from bakery import assert_equal
 from dataclasses import dataclass
 from PIL import Image as PIL_Image
 # local
-from decode import *
+from decode import get_color_values, get_encoded_message
 
 @dataclass
 class State:
