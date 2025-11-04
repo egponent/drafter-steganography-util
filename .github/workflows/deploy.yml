@@ -23,21 +23,41 @@ jobs:
             name: github-pages
             url: ${{ steps.deployment.outputs.page_url }}
         runs-on: ubuntu-latest
-        timeout-minutes: 2
+        timeout-minutes: 3
         steps:
             - name: Checkout
               uses: actions/checkout@v4
               with:
                   fetch-depth: 0
+            # Build (or augment) requirements.txt BEFORE setup-uv so caching keys on it
+            - name: Prepare dynamic requirements.txt
+              run: |
+                  set -euo pipefail
+                  BASE_PKGS=(coverage drafter bakery pylint mypy matplotlib pillow analyze_drafter_site)
+            
+                  if [ -f requirements.txt ]; then
+                    echo "requirements.txt exists; ensuring baseline packages are present..."
+                    for p in "${BASE_PKGS[@]}"; do
+                      if ! grep -Eiq "^[[:space:]]*${p}([<>=!~]=|[[:space:]]|$)" requirements.txt; then
+                        echo "$p" >> requirements.txt
+                      fi
+                    done
+                  else
+                    printf "%s\n" "${BASE_PKGS[@]}" > requirements.txt
+                  fi
+            
+                  echo "Final requirements.txt:"
+                  cat requirements.txt
+            - uses: actions/setup-python@v5
+              name: Install Python
+              with:
+                  python-version: "3.10"
             - name: Install uv
               uses: astral-sh/setup-uv@v6
               with:
                   enable-cache: true
                   activate-environment: true
-            - uses: actions/setup-python@v5
-              name: Install Python
-              with:
-                  python-version: "3.10"
+                  cache-dependency-glob: "requirements.txt"
             - id: get-repo-values
               name: Get repository name
               run: |
@@ -87,7 +107,7 @@ jobs:
               id: dependencies
               run: |
                   echo "<html><body><pre>" > ./dist/installation.html
-                  uv pip install coverage drafter bakery pylint mypy matplotlib pillow coverage analyze_drafter_site 2> >(tee ./dist/_ERRORS.txt) |& tee -a ./dist/installation.html
+                  uv pip install -r requirements.txt 2> >(tee ./dist/_ERRORS.txt) |& tee -a ./dist/installation.html
                   : # Install students' requirements.txt file if it is present
                   if [ -f requirements.txt ]; then
                       uv pip install -r requirements.txt 2> >(tee ./dist/_ERRORS.txt) |& tee -a ./dist/installation.html
@@ -193,7 +213,7 @@ jobs:
                   } |& tee -a ./dist/_build_log.txt ./dist/compile.html
                   
                   : # Create a JS file to hold all their code
-                  uv run drafter ./dist/$MAIN_FILE --output-directory ./dist/ --warn-missing-info --create-404 if_missing "${ADDITIONAL_FILES[@]}" "${EXTERNAL_PAGES[@]}" 2> >(tee ./dist/_ERRORS.txt) |& tee -a ./dist/compile.html ./dist/_build_log.txt
+                  uv run drafter ./dist/$MAIN_FILE --output-directory ./dist/ --warn-missing-info --create-404 if_missing "${ADDITIONAL_ARGS[@]}" "${EXTERNAL_PAGES[@]}" 2> >(tee ./dist/_ERRORS.txt) |& tee -a ./dist/compile.html ./dist/_build_log.txt
 
                   echo "</pre></body></html>" >> ./dist/compile.html
                   echo "<li><a href='./compile.html'>Compile Files</a>: Compilation details from when we bundled up your website. You probably don't need to worry about this, unless there was an error during deployment.</li>" >> ./dist/dashboard.html
