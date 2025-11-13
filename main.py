@@ -6,6 +6,18 @@ from PIL import Image as PIL_Image
 # local
 from decode import get_color_values, get_encoded_message
 
+set_site_information(
+    author="lukajv@udel.edu",
+    description="""A steganography utility which lets you encode
+    and decode messages into image files.""",
+    sources=["N/A"],
+    planning=["plan.pdf"],
+    links=["https://github.com/UD-F25-CS1/cs1-website-f25-lukajv"]
+)
+hide_debug_information()
+set_website_title("Your Website Title")
+set_website_framed(False)
+
 @dataclass
 class State:
     image: PIL_Image
