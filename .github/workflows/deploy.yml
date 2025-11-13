@@ -1,0 +1,384 @@
+# Workflow for deploying a Drafter-based Python website to GitHub Pages
+name: Deploy Python Website
+
+on:
+  # Allows you to run this workflow manually from the Actions tab
+  workflow_dispatch:
+  # You can also add triggers like push to main:
+  # push:
+  #   branches:
+  #     - main
+
+# Sets permissions of the GITHUB_TOKEN to allow deployment to GitHub Pages
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Allow only one concurrent deployment
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5 # Increased timeout just in case
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Needed for GitInspector
+
+      - name: Prepare dynamic requirements.txt
+        run: |
+          set -euo pipefail
+          # Define all packages that are essential for the build process
+          BASE_PKGS=(coverage drafter bakery pylint mypy matplotlib pillow analyze_drafter_site)
+    
+          if [ -f requirements.txt ]; then
+            echo "requirements.txt exists; ensuring baseline packages are present..."
+            for p in "${BASE_PKGS[@]}"; do
+              # Check if package is already in requirements.txt
+              if ! grep -Eiq "^[[:space:]]*${p}([<>=!~]=|[[:space:]]|$)" requirements.txt; then
+                echo "$p" >> requirements.txt
+              fi
+            done
+          else
+            echo "No requirements.txt found. Creating one with baseline packages."
+            printf "%s\n" "${BASE_PKGS[@]}" > requirements.txt
+          fi
+    
+          echo "--- Final requirements.txt ---"
+          cat requirements.txt
+          echo "------------------------------"
+
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install uv and Setup Caching
+        uses: astral-sh/setup-uv@v6
+        with:
+          activate-environment: true
+          # Enable caching based on the contents of requirements.txt
+          enable-cache: true
+          cache-dependency-glob: "requirements.txt"
+
+      - name: Create dist directory
+        run: mkdir -p dist
+
+      - name: Create Log and Error Files
+        run: |
+          touch ./dist/_ERRORS.txt
+          touch ./dist/_WARNINGS.txt
+          echo "--- Build Log ---" |& tee ./dist/_build_log.txt
+          echo "Run ID: ${{ github.run_id }}" |& tee -a ./dist/_build_log.txt
+          echo "Log URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" |& tee -a ./dist/_build_log.txt
+          echo "-----------------" |& tee -a ./dist/_build_log.txt
+
+      - name: Setup Dashboard
+        run: |
+          # Create the dashboard HTML file
+          printf '<h2>Quick Links</h2>\n<p>Here are quick links for your deployed site! The build log is at the bottom.</p>\n<ul>\n' > ./dist/dashboard.html
+          
+          # Create a redirect from /quick
+          echo "<html><head><meta http-equiv='refresh' content='0; URL=dashboard.html' /></head><body>Redirecting to dashboard</body></html>" > ./dist/quick.html
+          
+          # Add links to the dashboard
+          echo "<li><a href='./'>Deployed Site</a>: Your actual Drafter website.</li>" >> ./dist/dashboard.html
+          echo "<li><a href='./dashboard.html'>Dashboard</a>: This current page.</li>" >> ./dist/dashboard.html
+          echo "<li><a href='${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}'>Deployment Log</a>: The official deployment logs on GitHub.</li>" >> ./dist/dashboard.html
+          
+          printf 'Successfully created dashboard file\n' >> ./dist/_build_log.txt
+
+      - name: Install dependencies
+        id: dependencies
+        run: |
+          echo "<html><body><pre>" > ./dist/installation.html
+          echo "Installing packages from requirements.txt..." |& tee -a ./dist/installation.html ./dist/_build_log.txt
+          
+          # Install all dependencies
+          uv pip install -r requirements.txt 2> >(tee -a ./dist/_ERRORS.txt) |& tee -a ./dist/installation.html ./dist/_build_log.txt
+          
+          echo "</pre></body></html>" >> ./dist/installation.html
+          echo "<li><a href='./installation.html'>Installation</a>: Python package installation logs.</li>" >> ./dist/dashboard.html
+          
+          printf 'Successfully installed dependencies\n' >> ./dist/_build_log.txt
+
+      - name: Create Github Repo Redirect and Link
+        run: |
+          # Create a redirect to the github repository
+          echo "<html><head><meta http-equiv='refresh' content='0; URL=${{github.server_url}}/${{github.repository}}' /></head><body>Redirecting...</body></html>" > ./dist/repo.html
+          
+          # Add the redirect to the dashboard
+          echo "<li><a href='./repo.html'>GitHub Repository</a>: Jump to the GitHub repository.</li>" >> ./dist/dashboard.html
+          
+          printf 'Successfully created redirect to repository\n' >> ./dist/_build_log.txt
+
+      - name: Structural Sanity Checks
+        id: structural_checks
+        run: |
+          MAIN_FILE=""
+          for possible_main in main.py Main.py app.py App.py; do
+              if [ -f "$possible_main" ]; then
+                  MAIN_FILE="$possible_main"
+                  break
+              fi
+          done
+          
+          if [ -z "$MAIN_FILE" ]; then
+              echo "CRITICAL ERROR: Missing main Python file (looked for main.py, Main.py, app.py, App.py)" |& tee -a ./dist/_build_log.txt ./dist/_ERRORS.txt
+              exit 1
+          fi
+          
+          echo "main_file=$MAIN_FILE" >> $GITHUB_OUTPUT
+          echo "Found main file: $MAIN_FILE" |& tee -a ./dist/_build_log.txt
+          
+          # Check for default/unchanged main.py file
+          if [ "$(md5sum "$MAIN_FILE" | cut -d' ' -f1)" == "c6cdb475fd65d116483482315dc9b8ef" ]; then
+              echo "CRITICAL ERROR: You need to update the $MAIN_FILE file with your own code." |& tee -a ./dist/_build_log.txt ./dist/_ERRORS.txt
+              exit 1
+          fi
+          
+          printf 'Successfully passed structural checks\n' >> ./dist/_build_log.txt
+
+      - name: Compile Site
+        id: compile_site
+        run: |
+          echo "<html><body><pre>" > ./dist/compile.html
+          
+          # 1. Copy all project files to the ./dist/ directory for compilation
+          # This copies main.py, decode.py, images, etc.
+          rsync -av --exclude='__pycache__' --exclude='.DS_Store' --exclude='./dist/' --exclude='.*' --exclude='gitinspector' ./ ./dist/
+          
+          # Get the main file from the previous step
+          MAIN_FILE="${{ steps.structural_checks.outputs.main_file }}"
+          
+          # Find all additional files in ./dist/ to pass to drafter
+          ADDITIONAL_ARGS=()
+          shopt -s nullglob
+          for ext in png jpg jpeg gif svg webp csv json txt md py html js css doc docx pdf xls xlsx; do
+              for file in ./dist/*."$ext"; do
+                  ADDITIONAL_ARGS+=( "--additional-files" "$file" )
+              done
+          done
+          
+          EXTERNAL_PAGES=(
+              "--external-pages=quick Quick"
+              "--external-pages=installation Installation"
+              "--external-pages=repo Repository"
+              "--external-pages=compile Compile"
+              "--external-pages=tests Tests"
+              "--external-pages=coverage Coverage"
+              "--external-pages=lint Lint"
+              "--external-pages=type Type"
+              "--external-pages=integrity Integrity"
+              "--external-pages=git Git"
+              "--external-pages=commits Commits"
+              "--external-pages=drafter_analysis Analysis"
+          )
+          
+          # Log the exact drafter command
+          {
+              echo "About to run drafter command:"
+              printf '  PYTHONPATH=$PWD/dist/ uv run drafter %q' "./dist/$MAIN_FILE"
+              printf ' %q' --output-directory ./dist/ --warn-missing-info --create-404 if_missing
+              printf ' %q' "${ADDITIONAL_ARGS[@]:-}"
+              printf ' %q' "${EXTERNAL_PAGES[@]:-}"
+              echo
+          } |& tee -a ./dist/_build_log.txt ./dist/compile.html
+          
+          # 2. Run drafter to compile the site
+          #
+          # !!! CRITICAL FIX FOR ImportError !!!
+          # We set PYTHONPATH=$PWD/dist/
+          # This forces the Python process spawned by `uv run` to
+          # add the ./dist/ directory to its module search path.
+          # This allows `import decode` in `main.py` to find `decode.py`
+          # (which rsync already copied into ./dist/).
+          #
+          PYTHONPATH=$PWD/dist/ uv run drafter ./dist/$MAIN_FILE \
+            --output-directory ./dist/ \
+            --warn-missing-info \
+            --create-404 if_missing \
+            "${ADDITIONAL_ARGS[@]}" \
+            "${EXTERNAL_PAGES[@]}" 2> >(tee -a ./dist/_ERRORS.txt) |& tee -a ./dist/compile.html ./dist/_build_log.txt
+
+          echo "</pre></body></html>" >> ./dist/compile.html
+          echo "<li><a href='./compile.html'>Compile Files</a>: Logs from the Drafter compilation step.</li>" >> ./dist/dashboard.html
+          
+          printf 'Successfully compiled site into JS\n' >> ./dist/_build_log.txt
+
+      - name: Run tests and output code coverage
+        id: tests
+        run: |
+          MAIN_FILE="${{ steps.structural_checks.outputs.main_file }}"
+          
+          echo "<html><body><pre>" > ./dist/tests.html
+          
+          # Set DRAFTER_SKIP=true to prevent drafter from running its web server
+          # We are now running tests directly on the source files, not the /dist copies
+          echo "Running tests..." |& tee -a ./dist/_build_log.txt ./dist/tests.html
+          DRAFTER_SKIP=true coverage run "$MAIN_FILE" 2> >(tee -a ./dist/_ERRORS.txt) |& tee -a ./dist/_build_log.txt ./dist/tests.html
+          
+          echo "Generating coverage report..." |& tee -a ./dist/_build_log.txt ./dist/tests.html
+          coverage html -d ./dist/coverage 2> >(tee -a ./dist/_ERRORS.txt) |& tee -a ./dist/_build_log.txt ./dist/tests.html
+          
+          echo "</pre></body></html>" >> ./dist/tests.html
+          echo "<li><a href='./tests.html'>Raw Test Output</a>: The results of running your test cases.</li>" >> ./dist/dashboard.html
+          echo "<li><a href='./coverage/index.html'>Coverage Report</a>: Code coverage report from your tests.</li>" >> ./dist/dashboard.html
+          
+          printf 'Successfully ran tests and output code coverage\n' >> ./dist/_build_log.txt
+
+      - name: Run linter
+        id: lint
+        continue-on-error: true # Don't fail build on lint errors
+        run: |
+          echo "<html><body><pre>" > ./dist/lint.html
+          echo "Running pylint..." |& tee -a ./dist/_build_log.txt ./dist/lint.html
+          
+          pylint *.py --exit-zero 2> >(tee -a ./dist/_ERRORS.txt) |& tee -a ./dist/_build_log.txt ./dist/lint.html
+          
+          echo "</pre></body></html>" >> ./dist/lint.html
+          echo "<li><a href='./lint.html'>Lint</a>: Stylistic analysis from <code>PyLint</code>.</li>" >> ./dist/dashboard.html
+          
+          printf 'Successfully ran linter\n' >> ./dist/_build_log.txt
+
+      - name: Run type checker
+        id: typecheck
+        continue-on-error: true # Don't fail build on type errors
+        run: |
+          MAIN_FILE="${{ steps.structural_checks.outputs.main_file }}"
+          
+          echo "<html><body><pre>" > ./dist/type.html
+          
+          # Create a default mypy.ini if one doesn't exist
+          if [ ! -f mypy.ini ]; then
+              echo "Creating default mypy.ini to ignore bakery imports" |& tee -a ./dist/_build_log.txt ./dist/type.html
+              echo '[mypy]' > mypy.ini
+              echo '[mypy-bakery.*]' >> mypy.ini
+              echo 'ignore_missing_imports = True' >> mypy.ini
+          fi
+          
+          echo "Running mypy type checker..." |& tee -a ./dist/_build_log.txt ./dist/type.html
+          mypy "$MAIN_FILE" |& tee -a ./dist/_build_log.txt ./dist/type.html
+          
+          echo "</pre></body></html>" >> ./dist/type.html
+          echo "<li><a href='./type.html'>Type</a>: Type checking analysis from <code>MyPy</code>.</li>" >> ./dist/dashboard.html
+          
+          printf 'Successfully ran type checker\n' >> ./dist/_build_log.txt
+
+      - name: Run Drafter Site Analysis
+        id: drafter_analysis
+        continue-on-error: true # Don't fail build on analysis errors
+        run: |
+          MAIN_FILE="${{ steps.structural_checks.outputs.main_file }}"
+
+          echo "<html><body><pre>" > ./dist/drafter_analysis.html
+          echo "Running analyze_drafter_site..." |& tee -a ./dist/_build_log.txt ./dist/drafter_analysis.html
+          
+          if uv run analyze_drafter_site "$MAIN_FILE" | tee -a ./dist/drafter_analysis.html ./dist/_build_log.txt ; then
+              printf '\n' >> ./dist/drafter_analysis.html
+          else
+              echo "analyze_drafter_site exited with a non-zero status" |& tee -a ./dist/_WARNINGS.txt ./dist/_build_log.txt
+          fi
+          
+          echo "</pre></body></html>" >> ./dist/drafter_analysis.html
+          echo "<li><a href='./drafter_analysis.html'>Drafter Analysis</a>: Output from <code>analyze_drafter_site</code>.</li>" >> ./dist/dashboard.html
+          
+          printf 'Successfully ran analyze_drafter_site\n' >> ./dist/_build_log.txt
+
+      - name: Create integrity report
+        if: ${{ !cancelled() }}
+        run: |
+          echo "<html><body><pre>" > ./dist/integrity.html
+          echo "MD5 Hashsums for build files:" |& tee -a ./dist/_build_log.txt ./dist/integrity.html
+          
+          md5sum .github/workflows/deploy.yml | tee -a ./dist/integrity.html ./dist/_build_log.txt
+          
+          echo "</pre></body></html>" >> ./dist/integrity.html
+          echo "<li><a href='./integrity.html'>File Integrity Checks</a>: MD5 hashsums for debugging.</li>" >> ./dist/dashboard.html
+          
+          printf 'Successfully created integrity report\n' >> ./dist/_build_log.txt
+
+      - name: Create GitInspector Report
+        if: ${{ !cancelled() }}
+        run: |
+          echo "Cloning GitInspector..." |& tee -a ./dist/_build_log.txt
+          git clone https://github.com/jpwhite3/gitinspector.git
+          
+          echo "Running GitInspector..." |& tee -a ./dist/_build_log.txt
+          python ./gitinspector/gitinspector.py ./ --grading --format=html -f tsx,ts,html,css,py,md -x ./gitinspector -x ./dist/ -x ./tools/ > ./dist/git.html
+          
+          echo "<li><a href='./git.html'>Git Inspector Report</a>: A record of repository commits and work.</li>" >> ./dist/dashboard.html
+          
+          printf 'Successfully created GitInspector report\n' >> ./dist/_build_log.txt
+
+      - name: Copy commit logs with messages
+        if: ${{ !cancelled() }}
+        run: |
+          echo "<html><body><pre>" > ./dist/commits.html
+          echo "Last 50 commits:" |& tee -a ./dist/_build_log.txt ./dist/commits.html
+          
+          git log --oneline --decorate --graph --all -n 50 | tee -a ./dist/commits.html ./dist/_build_log.txt
+          
+          echo "</pre></body></html>" >> ./dist/commits.html
+          echo "<li><a href='./commits.html'>Commit Messages</a>: The last 50 commit messages.</li>" >> ./dist/dashboard.html
+          
+          printf 'Successfully copied commit logs with messages\n' >> ./dist/_build_log.txt
+
+      - name: Show errors and warnings in dashboard
+        if: ${{ !cancelled() }}
+        run: |
+          # Create the HTML header
+          printf '<!DOCTYPE html>\n<html>\n<head>\n<title>Dashboard</title>\n</head>\n<body>\n<h1>Dashboard</h1>\n' > ./dist/_DASHBOARD_HEADER.html
+          
+          # Check for errors
+          if [ -s ./dist/_ERRORS.txt ]; then
+              printf '<h2 style="color: red;">Error During Build!</h2>\n<p style="color: red;">Details below:</p>\n<pre>' >> ./dist/_DASHBOARD_HEADER.html
+              cat ./dist/_ERRORS.txt >> ./dist/_DASHBOARD_HEADER.html
+              printf '</pre>\n' >> ./dist/_DASHBOARD_HEADER.html
+              printf 'Errors found during build.\n' >> ./dist/_build_log.txt
+          # Check for warnings if no errors
+          elif [ -s ./dist/_WARNINGS.txt ]; then
+              printf '<h2 style="color: orange;">Warning During Build!</h2>\n<p style="color: orange;">Details below:</p>\n<pre>' >> ./dist/_DASHBOARD_HEADER.html
+              cat ./dist/_WARNINGS.txt >> ./dist/_DASHBOARD_HEADER.html
+              printf '</pre>\n' >> ./dist/_DASHBOARD_HEADER.html
+              printf 'Warnings found during build.\n' >> ./dist/_build_log.txt
+          else
+              printf 'No major errors or warnings found during build.\n' >> ./dist/_build_log.txt
+          fi
+          
+          # Prepend the header to the dashboard
+          cat ./dist/_DASHBOARD_HEADER.html ./dist/dashboard.html > ./dist/tmp_dashboard.html
+          mv ./dist/tmp_dashboard.html ./dist/dashboard.html
+
+      - name: Add build log at the end of the dashboard
+        if: ${{ !cancelled() }}
+        run: |
+          printf '</ul>\n<h2>Build Log</h2>\n<pre>' >> ./dist/dashboard.html
+          cat ./dist/_build_log.txt >> ./dist/dashboard.html
+          printf '</pre>\n</body>\n</html>' >> ./dist/dashboard.html
+          printf 'Build log added to dashboard. Ready to deploy!\n' >> ./dist/_build_log.txt
+
+      # --- Deployment Steps ---
+      - name: Setup Pages
+        uses: actions/configure-pages@v3
+        if: ${{ !cancelled() }}
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@main
+        if: ${{ !cancelled() }}
+        with:
+          path: "dist/" # Upload the dist directory
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+        if: ${{ !cancelled() }}
