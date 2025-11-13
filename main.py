@@ -3,8 +3,6 @@ from drafter import *
 from bakery import assert_equal
 from dataclasses import dataclass
 from PIL import Image as PIL_Image
-# local
-from decode import get_color_values, get_encoded_message
 
 set_site_information(
     author="lukajv@udel.edu",
