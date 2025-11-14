@@ -144,7 +144,7 @@ assert_equal(get_encoded_message([254, 254, 255, 255, 254, 254, 254, 254,
                                   254, 254, 254, 254, 254, 254, 254, 254,
                                   254, 254, 254, 254, 254, 254, 254, 254,
                                   252, 244, 244, 255, 255, 254, 245, 220]), "Hi" )
-def get_color_values(image: PIL_Image, chl_idx: int) -> list[int]:
+def get_color_values(image: PIL_Image.Image, chl_idx: int) -> list[int]:
     width, length = image.size
     channel_vals = []
     for x in range(width):
@@ -163,7 +163,7 @@ def get_color_values(image: PIL_Image, chl_idx: int) -> list[int]:
 
 @dataclass
 class State:
-    image: PIL_Image
+    image: PIL_Image.Image
     message: str
 
 @route
@@ -197,8 +197,8 @@ assert_equal(
                   Button(text='Decode', url='/decode_image')]))
 
 @route
-def decode_image(state: State, new_image: bytes) -> Page:
-    state.image = PIL_Image.open(io.BytesIO(new_image)).convert('RGB')
+def decode_image(state: State, new_image: PIL_Image.Image) -> Page:
+    state.image = new_image
     state.message = get_encoded_message(get_color_values(state.image, 1))
     return Page(state, [
         "Your hidden message was:",
