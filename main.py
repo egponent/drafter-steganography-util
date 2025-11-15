@@ -301,7 +301,8 @@ def encode_image(state: State, raw_image: PIL_Image.Image, user_message: str) ->
         "Your encoded image!",
         Image(state.image),
         "Would you like to save the image?",
-        Download("Download", "encoded_image.png", state.image, "image/png")
+        Download("Download", "encoded_image.png", state.image, "image/png"),
+        Button("Back", "index")
     ])
 
 
