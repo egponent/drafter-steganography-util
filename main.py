@@ -153,32 +153,114 @@ def get_color_values(image: PIL_Image.Image, chl_idx: int) -> list[int]:
             channel_vals.append(pixel[chl_idx])
     return channel_vals
 
-#green_vals = get_color_values(PIL_Image.open("testing/1_hidden_message.png").convert('RGB'), 1)  #use green channel
-#assert_equal(green_vals[:24], [254, 254, 255, 255, 254, 254, 254, 254, 254, 254, 255, 255, 254, 254, 255, 254, 254, 254, 255, 255, 254, 255, 254, 254])
-
 # Encoding helper functions
 
-# ...
 
+def prepend_header(message: str) -> str:
+    """
+    Determines the length of a message and returns a 
+    string with the length of the message in three digits
+    prepended to the original message.
+    
+    Params:
+        message: str -> The message.
+    Returns:
+        str -> Length of message prepended to the message.
+    """
+    if len(message) >= 100:
+        prefix = ''
+    elif len(message) >= 10:
+        prefix = '0'
+    else:
+        prefix = '00'
+    return prefix + str(len(message)) + message
+    
+assert_equal(prepend_header("sdf"), '003sdf')
+assert_equal(prepend_header(""), '000')
+assert_equal(prepend_header("aaaaaaaaaaaa"), '012' + "a"*12)
+assert_equal(prepend_header("a"*101), '101' + "a"*101)
+
+def message_to_binary(message: str) -> str:
+    """
+    Converts a string to binary.
+    
+    Params:
+        message: str -> the message
+    Returns:
+        str -> binary representation of the message
+    """
+    result = ""
+    for char in message:
+        result += format(ord(char), '08b')
+    return result
+
+assert_equal(message_to_binary("Hi"), "0100100001101001")
+assert_equal(message_to_binary("058"),"001100000011010100111000")
+assert_equal(message_to_binary("00"),"0011000000110000")
+assert_equal(message_to_binary(""), "")
+
+def new_color_value(color_intensity: int, bit: str) -> int:
+    """
+    Makes the evenness of a color intensity
+    value match a given bit.
+    
+    Params:
+        color_intensity: int -> Base10 color intensity
+        bit: str -> 1 or 0 to determine evenness
+        
+    Returns:
+        int -> Base10 color intensity matching
+        bit evenness.
+    """
+    if bit == '1' and color_intensity % 2 == 0:
+        return color_intensity + 1
+    elif bit == '0' and color_intensity % 2 == 1:
+        return color_intensity - 1
+    else: return color_intensity
+
+assert_equal(new_color_value(255, '1'), 255)
+assert_equal(new_color_value(255, '0'), 254)
+assert_equal(new_color_value(254, '1'), 255)
+assert_equal(new_color_value(0, '1'), 1)
+
+def hide_bits(image: PIL_Image.Image, bits: str) -> PIL_Image.Image:
+    """
+    Hides message bits into an image.
+    
+    Params:
+        image: PIL_Image -> The image to encode a message in.
+        bits: str -> string of bits to encode
+    
+    Returns
+        PIL_Image -> The encoded message in an image file.
+    """
+    image_size = image.size
+    
+    for x in range(image_size[0]):
+        for y in range(image_size[1]):
+            curr_bit_idx = x*image_size[1] + y
+            if curr_bit_idx < len(bits):
+                red, green, blue = image.getpixel((x, y))
+                green = new_color_value(green, bits[curr_bit_idx])
+                image.putpixel((x, y), (red, green, blue))
+            else:
+                return image
+    return image
 
 @dataclass
 class State:
     image: PIL_Image.Image
     message: str
+    message_bits: str
 
 @route
 def index(state: State) -> Page:
     """ Use FileUpload to allow user to select only png files """
     return Page(state, [
         "Would you like to encode or decode?",
-        # Button("Encode", "encode_menu")
+        Button("Encode", "encode_menu"),
         Button("Decode", "decode_menu")
     ])
-
-assert_equal(
-    index(State(image=None, message='')),
-    Page(state=State(image=None, message=''),
-         content=['Would you like to encode or decode?', Button(text='Decode', url='/decode_menu')]))
 
 @route
 def decode_menu(state: State) -> Page:
@@ -188,13 +270,6 @@ def decode_menu(state: State) -> Page:
         FileUpload("new_image", accept="image/png"),
         Button("Decode", "decode_image")
     ])
-
-assert_equal(
-    decode_menu(State(image=None, message='')),
-    Page(state=State(image=None, message=''),
-         content=["Select the image you'd like to decode. (PNG only)",
-                  FileUpload(name='new_image'),
-                  Button(text='Decode', url='/decode_image')]))
 
 @route
 def decode_image(state: State, new_image: PIL_Image.Image) -> Page:
@@ -207,6 +282,27 @@ def decode_image(state: State, new_image: PIL_Image.Image) -> Page:
 
     ])
 
-# idk how to unit test this
+@route
+def encode_menu(state: State,) -> Page:
+    return Page(state, [
+        "Select the image that you'd like to use.",
+        FileUpload("raw_image"),
+        "Enter the message that you'd like to encode.",
+        TextArea("user_message"),
+        Button("Encode", "encode_image")
+    ])
 
-start_server(State(None, ""))
+@route
+def encode_image(state: State, raw_image: PIL_Image.Image, user_message: str) -> Page:
+    rgb_image = raw_image.convert("RGB")
+    message_bits = message_to_binary(prepend_header(user_message))
+    state.image = hide_bits(rgb_image, message_bits)
+    return Page(state, [
+        "Your encoded image!",
+        Image(state.image),
+        "Would you like to save the image?",
+        Download("Download", "encoded_image.png", state.image, "image/png")
+    ])
+
+
+start_server(State(None, "", ""))
