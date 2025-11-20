@@ -259,7 +259,7 @@ class State:
     image: PIL_Image.Image
     message: str
     message_bits: str
-    color_values = list[int]
+    color_values: list[int]
 
 @route
 def index(state: State) -> Page:
@@ -315,4 +315,4 @@ def encode_image(state: State, raw_image: PIL_Image.Image, user_message: str) ->
     ])
 
 
-start_server(State(None, "", ""))
+start_server(State(None, "", "", []))
