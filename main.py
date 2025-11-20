@@ -145,6 +145,16 @@ assert_equal(get_encoded_message([254, 254, 255, 255, 254, 254, 254, 254,
                                   254, 254, 254, 254, 254, 254, 254, 254,
                                   252, 244, 244, 255, 255, 254, 245, 220]), "Hi" )
 def get_color_values(image: PIL_Image.Image, chl_idx: int) -> list[int]:
+    """
+    Gets a list of color intensities in a
+    given channel in a given image.
+
+    Params:
+        image: PIL_Image.Image -> image to scan.
+        chl_idx: int -> Color channel to make a list of.
+    Returns:
+        list[int] -> List of color intensities.
+    """
     width, length = image.size
     channel_vals = []
     for x in range(width):
@@ -152,9 +162,6 @@ def get_color_values(image: PIL_Image.Image, chl_idx: int) -> list[int]:
             pixel = image.getpixel((x, y))
             channel_vals.append(pixel[chl_idx])
     return channel_vals
-
-# Encoding helper functions
-
 
 def prepend_header(message: str) -> str:
     """
@@ -252,6 +259,7 @@ class State:
     image: PIL_Image.Image
     message: str
     message_bits: str
+    color_values = list[int]
 
 @route
 def index(state: State) -> Page:
@@ -274,7 +282,8 @@ def decode_menu(state: State) -> Page:
 @route
 def decode_image(state: State, new_image: PIL_Image.Image) -> Page:
     state.image = new_image
-    state.message = get_encoded_message(get_color_values(state.image, 1))
+    state.color_values = get_color_values(state.image, 1)
+    state.message = get_encoded_message(state.color_values)
     return Page(state, [
         "Your hidden message was:",
         state.message,
@@ -295,8 +304,8 @@ def encode_menu(state: State,) -> Page:
 @route
 def encode_image(state: State, raw_image: PIL_Image.Image, user_message: str) -> Page:
     rgb_image = raw_image.convert("RGB")
-    message_bits = message_to_binary(prepend_header(user_message))
-    state.image = hide_bits(rgb_image, message_bits)
+    state.message_bits = message_to_binary(prepend_header(user_message))
+    state.image = hide_bits(rgb_image, state.message_bits)
     return Page(state, [
         "Your encoded image!",
         Image(state.image),
